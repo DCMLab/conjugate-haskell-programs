@@ -52,10 +52,10 @@ import qualified Data.Vector                   as V
 import           Lens.Micro
 import           Lens.Micro.Extras
 import           Lens.Micro.TH                  ( makeLenses )
-import           System.Random.MWC.Probability
+import           System.Random.MWC.Probability  hiding (Uniform)
 import           GHC.TypeNats
 import           GHC.Generics
-import           Numeric.SpecFunctions          ( logChoose )
+import           Numeric.SpecFunctions          ( logChoose, logBeta, logGamma )
 import           GHC.Float                      ( int2Double )
 
 ----------------------------------------------------------------
@@ -143,7 +143,7 @@ class GJeffreys t where
   gjeffreysPrior :: forall p. t p
 
 instance GJeffreys V1 where
-  gjeffreysPrior = undefined
+  gjeffreysPrior = undefined -- ok
 
 instance GJeffreys U1 where
   gjeffreysPrior = U1
@@ -165,6 +165,38 @@ instance (GJeffreys ta, GJeffreys tb) => GJeffreys (ta :*: tb) where
 instance (Generic (t HyperRep), GJeffreys (Rep (t HyperRep))) => Jeffreys (t :: (Type -> Type) -> Type) where
   jeffreysPrior = GHC.Generics.to (gjeffreysPrior @(Rep (t HyperRep)))
 
+-- uniform prior
+-- -------------
+
+class Uniform a where
+  uniformPrior :: Hyper a
+
+class GUniform t where
+  guniformPrior :: forall p. t p
+
+instance GUniform V1 where
+  guniformPrior = undefined -- ok
+
+instance GUniform U1 where
+  guniformPrior = U1
+
+-- base case: k is a conjugate distribution
+instance (Uniform (AsPrior p)) => GUniform (K1 i (HyperRep p)) where
+  guniformPrior = K1 $ HyperRep $ uniformPrior @(AsPrior p)
+
+-- recursive case: k is another record
+instance (Uniform k, k HyperRep ~ Hyper k) => GUniform (K1 i (k HyperRep)) where
+  guniformPrior = K1 $ uniformPrior @k
+
+instance (GUniform t) => GUniform (M1 i c (t :: Type -> Type)) where
+  guniformPrior = M1 guniformPrior
+
+instance (GUniform ta, GUniform tb) => GUniform (ta :*: tb) where
+  guniformPrior = guniformPrior @ta :*: guniformPrior @tb
+
+instance (Generic (t HyperRep), GUniform (Rep (t HyperRep))) => Uniform (t :: (Type -> Type) -> Type) where
+  uniformPrior = GHC.Generics.to (guniformPrior @(Rep (t HyperRep)))
+
 -- sampling from prior
 -- ------------------
 
@@ -175,7 +207,7 @@ class GPrior i o where
   gsampleProbs :: forall m p. PrimMonad m => i p -> Prob m (o p)
 
 instance GPrior V1 V1 where
-  gsampleProbs = undefined
+  gsampleProbs = undefined -- ok
 
 instance GPrior U1 U1 where
   gsampleProbs _ = pure U1
@@ -426,10 +458,13 @@ instance Distribution Beta where
   type Params Beta = (Double, Double)
   type Support Beta = Double
   distSample _ = uncurry beta
-  distLogP _ (_a, _b) _p = undefined -- TODO
+  distLogP _ (a, b) p = log (p ** (a - 1)) + log ((1 - p) ** (b - 1)) - logBeta a b
 
 instance Jeffreys (AsPrior Beta) where
   jeffreysPrior = (0.5, 0.5)
+
+instance Uniform (AsPrior Beta) where
+  uniformPrior = (1, 1)
 
 instance Prior (AsPrior Beta) where
   sampleProbs = distSample Beta
@@ -481,10 +516,15 @@ instance Distribution (Dirichlet n) where
   type Params (Dirichlet n) = V.Vector Double
   type Support (Dirichlet n) = V.Vector Double
   distSample _ = dirichlet
-  distLogP _ _counts _cat = undefined -- TODO
+  distLogP _ counts probs = logp + logz
+   where logp = sum (V.zipWith (\a x -> log x * (a - 1)) counts probs)
+         logz = logGamma (sum counts) - sum (logGamma <$> counts)
 
 instance KnownNat n => Jeffreys (AsPrior (Dirichlet n)) where
   jeffreysPrior = V.replicate (fromIntegral $ natVal (Proxy :: Proxy n)) 0.5
+
+instance KnownNat n => Uniform (AsPrior (Dirichlet n)) where
+  uniformPrior = V.replicate (fromIntegral $ natVal (Proxy :: Proxy n)) 1
 
 instance Prior (AsPrior (Dirichlet n)) where
   sampleProbs = distSample Dirichlet
