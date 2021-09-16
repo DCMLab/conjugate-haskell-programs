@@ -1,0 +1,30 @@
+cabal-version: 1.12
+
+-- This file has been generated from package.yaml by hpack version 0.34.4.
+--
+-- see: https://github.com/sol/hpack
+
+name:           notebooks
+version:        0.1.0.0
+author:         Christoph Finkensiep
+maintainer:     chfin@chfin.de
+copyright:      Christoph Finkensiep
+license:        BSD3
+build-type:     Simple
+
+library
+  exposed-modules:
+      IHaskellMatplotlib
+      Lib
+  other-modules:
+      Paths_notebooks
+  hs-source-dirs:
+      src
+  build-depends:
+      base >=4.7 && <5
+    , bytestring
+    , directory
+    , ihaskell
+    , matplotlib
+    , temporary
+  default-language: Haskell2010

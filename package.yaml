@@ -30,12 +30,6 @@ dependencies:
 - mwc-probability
 - primitive
 - math-functions
-- hmatrix
-- matplotlib
-- bytestring
-- ihaskell
-- temporary
-- directory
 
 library:
   source-dirs: src

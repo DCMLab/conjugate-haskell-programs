@@ -1,4 +1,4 @@
-module IHaskellHelpers where
+module IHaskellMatplotlib where
 
 import           IHaskell.Display
 import           Graphics.Matplotlib
