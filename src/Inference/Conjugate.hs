@@ -18,6 +18,7 @@
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE PartialTypeSignatures #-}
 {-# OPTIONS_GHC -Wno-partial-type-signatures #-}
+{-# LANGUAGE StandaloneKindSignatures #-}
 module Inference.Conjugate where
 
 import           Control.Monad.Primitive        ( PrimMonad
@@ -27,36 +28,43 @@ import           Control.Monad.Reader           ( ReaderT
                                                 , runReaderT
                                                 )
 import           Control.Monad.Reader.Class     ( MonadReader(ask) )
-import           Control.Monad.State            ( StateT
-                                                , runStateT
-                                                , execStateT
+import           Control.Monad.State            ( State
+                                                , StateT
                                                 , evalStateT
+                                                , execStateT
+                                                , runStateT
                                                 )
-import           Control.Monad.State.Class      ( modify
+import           Control.Monad.State.Class      ( get
+                                                , modify
                                                 , put
-                                                , get
                                                 )
 import           Control.Monad.Writer
 import           Data.Dynamic                   ( Dynamic
-                                                , toDyn
-                                                , fromDynamic
                                                 , Typeable
+                                                , fromDynamic
+                                                , toDyn
                                                 )
 import           Data.Kind
 import           Data.Maybe                     ( fromMaybe )
+import           Data.MultiSet                 as MS
 import qualified Data.Sequence                 as S
 import           Data.Typeable                  ( Proxy(Proxy)
                                                 , typeRep
                                                 )
 import qualified Data.Vector                   as V
+import           GHC.Float                      ( int2Double )
+import           GHC.Generics
+import           GHC.TypeNats
 import           Lens.Micro
 import           Lens.Micro.Extras
 import           Lens.Micro.TH                  ( makeLenses )
-import           System.Random.MWC.Probability  hiding (Uniform)
-import           GHC.TypeNats
-import           GHC.Generics
-import           Numeric.SpecFunctions          ( logChoose, logBeta, logGamma )
-import           GHC.Float                      ( int2Double )
+import           Numeric.SpecFunctions          ( logBeta
+                                                , logChoose
+                                                , logFactorial
+                                                , logGamma
+                                                )
+import           System.Random.MWC.Probability
+                                         hiding ( Uniform )
 
 ----------------------------------------------------------------
 -- type classes and families for distributions and conjugates --
@@ -81,7 +89,7 @@ class Distribution a where
   distLogP :: a -> Params a -> Support a -> Double
 
 -- -- | Used as a type-lifted kind for conjugate distribution pairs.
--- data Conj a b = Conj a b
+-- data Conj a b = Conj a bb
 
 -- | A type-level marker for treating a distribution as a prior.
 newtype AsPrior p = AsPrior p
@@ -247,10 +255,27 @@ type Accessor (r :: (Type -> Type) -> Type) p = forall f . Lens' (r f) (f p)
 class Monad m => RandomInterpreter m r | m -> r where
   type SampleCtx m a :: Constraint
   sampleValue :: (Conjugate p l, SampleCtx m l) => l -> Accessor r p -> m (Support l)
-  sampleConst :: (Distribution a, SampleCtx m a) => a -> Params a -> m (Support a)
+  sampleConst :: (Distribution d, SampleCtx m d) => d -> Params d -> m (Support d)
+  permutationPlate :: (Ord a) => Int -> m a -> m [a]
 
 newtype Trace (r :: (Type -> Type) -> Type)  = Trace {runTrace :: S.Seq Dynamic}
   deriving (Show)
+
+observeValue
+  :: (Conjugate p l, Typeable (Support l), Monad m)
+  => l
+  -> Accessor r p
+  -> Support l
+  -> StateT (Trace r) m ()
+observeValue _ _ val = modify $ \(Trace st) -> Trace $ st S.|> toDyn val
+
+observeConst
+  :: (Distribution d, Typeable (Support d), Monad m)
+  => d
+  -> Params d
+  -> Support d
+  -> StateT (Trace r) m ()
+observeConst _ _ val = modify $ \(Trace st) -> Trace $ st S.|> toDyn val
 
 takeTrace :: Typeable a => Trace r -> Maybe (a, Trace r)
 takeTrace (Trace t) = do
@@ -278,8 +303,9 @@ instance (PrimMonad m) => RandomInterpreter (SampleI m r) r where
     probs <- ask
     lift $ distSample lk $ runProbs $ view getProbs probs
   sampleConst
-    :: forall  a . (Distribution a) => a -> Params a -> SampleI m r (Support a)
+    :: forall d . (Distribution d) => d -> Params d -> SampleI m r (Support d)
   sampleConst dist params = SampleI $ lift $ distSample dist params
+  permutationPlate = replicateM
 
 sampleResult :: p ProbsRep -> SampleI m p a -> Gen (PrimState m) -> m a
 sampleResult probs (SampleI a) = sample (runReaderT a probs)
@@ -304,17 +330,19 @@ instance (PrimMonad m) => RandomInterpreter (TraceI m r) r where
     modify $ \(Trace obs) -> Trace $ obs S.|> toDyn val
     pure val
   sampleConst
-    :: forall a
-     . (Distribution a, Typeable (Support a))
-    => a
-    -> Params a
-    -> TraceI m r (Support a)
+    :: forall d
+     . (Distribution d, Typeable (Support d))
+    => d
+    -> Params d
+    -> TraceI m r (Support d)
   sampleConst dist params = TraceI $ do
     val <- lift $ lift $ distSample dist params
     modify $ \(Trace obs) -> Trace $ obs S.|> toDyn val
     pure val
+  permutationPlate = replicateM
 
-sampleTrace :: r ProbsRep -> TraceI m r a -> Gen (PrimState m) -> m (a, Trace r)
+sampleTrace
+  :: r ProbsRep -> TraceI m r a -> Gen (PrimState m) -> m (a, Trace r)
 sampleTrace probs (TraceI a) = do
   let st = runReaderT a probs
       pr = runStateT st (Trace mempty)
@@ -342,22 +370,40 @@ instance RandomInterpreter (EvalTraceI r) r where
     put (trace', totalLogP + logP)
     pure val
   sampleConst
-    :: forall a
-     . (Distribution a, Typeable (Support a))
-    => a
-    -> Params a
-    -> EvalTraceI r (Support a)
+    :: forall d
+     . (Distribution d, Typeable (Support d))
+    => d
+    -> Params d
+    -> EvalTraceI r (Support d)
   sampleConst dist params = EvalTraceI $ do
     (trace, totalLogP) <- get
     (val  , trace'   ) <- lift $ lift $ takeTrace trace
     let logP = distLogP dist params val
     put (trace', totalLogP + logP)
     pure val
+  permutationPlate n submodel = EvalTraceI $ do
+    probs                     <- ask
+    (trace  , totalLogP     ) <- get
+    (results, (trace', logP)) <- lift $ lift $ runTraceLogP
+      probs
+      trace
+      (replicateM n submodel)
+    let unique       = MS.fromList results
+        permutations = logFactorial (MS.size unique)
+          - sum (logFactorial . snd <$> MS.toOccurList unique)
+    put (trace', totalLogP + logP + permutations)
+    pure results
+
+runTraceLogP
+  :: r ProbsRep -> Trace r -> EvalTraceI r a -> Maybe (a, (Trace r, Double))
+runTraceLogP probs trace (EvalTraceI model) = do
+  runStateT (runReaderT model probs) (trace, 0)
 
 evalTraceLogP :: r ProbsRep -> Trace r -> EvalTraceI r a -> Maybe (a, Double)
-evalTraceLogP probs trace (EvalTraceI model) = do
-  (val, (_trace, logp)) <- runStateT (runReaderT model probs) (trace, 0)
+evalTraceLogP probs trace model = do
+  (val, (_trace, logp)) <- runTraceLogP probs trace model
   pure (val, logp)
+
 
 -- update priors
 -- -------------
@@ -388,8 +434,10 @@ instance RandomInterpreter (UpdatePriorsI r) r where
     (val  , trace') <- lift $ takeTrace trace
     put (trace', priors)
     pure val
+  permutationPlate = replicateM
 
-getPosterior :: r HyperRep -> Trace r -> UpdatePriorsI r a -> Maybe (r HyperRep)
+getPosterior
+  :: r HyperRep -> Trace r -> UpdatePriorsI r a -> Maybe (r HyperRep)
 getPosterior priors trace (UpdatePriorsI model) = do
   (_trace, posteriors) <- execStateT model (trace, priors)
   pure posteriors
@@ -427,12 +475,13 @@ instance RandomInterpreter (ShowTraceI r) r where
     -> ShowTraceI r (Support l)
   sampleValue _ _ = showTraceItem @l
   sampleConst
-    :: forall a
-     . (Distribution a, SampleCtx (ShowTraceI r) a)
-    => a
-    -> Params a
-    -> ShowTraceI r (Support a)
-  sampleConst _ _ = showTraceItem @a
+    :: forall d
+     . (Distribution d, SampleCtx (ShowTraceI r) d)
+    => d
+    -> Params d
+    -> ShowTraceI r (Support d)
+  sampleConst _ _ = showTraceItem @d
+  permutationPlate = replicateM
 
 showTrace :: Trace r -> ShowTraceI r a -> Maybe (a, String)
 showTrace trace (ShowTraceI model) = evalStateT (runWriterT model) trace
@@ -458,7 +507,8 @@ instance Distribution Beta where
   type Params Beta = (Double, Double)
   type Support Beta = Double
   distSample _ = uncurry beta
-  distLogP _ (a, b) p = log (p ** (a - 1)) + log ((1 - p) ** (b - 1)) - logBeta a b
+  distLogP _ (a, b) p =
+    log (p ** (a - 1)) + log ((1 - p) ** (b - 1)) - logBeta a b
 
 instance Jeffreys (AsPrior Beta) where
   jeffreysPrior = (0.5, 0.5)
@@ -499,7 +549,8 @@ instance Distribution Binomial where
 -- Categorical
 -- -----------
 
-data Categorical (n :: Nat) = Categorical
+type Categorical :: Nat -> Type
+data Categorical n = Categorical
 
 instance Distribution (Categorical n) where
   type Params (Categorical n) = V.Vector Double
@@ -510,15 +561,17 @@ instance Distribution (Categorical n) where
 -- Dirichlet
 -- ---------
 
-data Dirichlet (n :: Nat) = Dirichlet
+type Dirichlet :: Nat -> Type
+data Dirichlet n = Dirichlet
 
 instance Distribution (Dirichlet n) where
   type Params (Dirichlet n) = V.Vector Double
   type Support (Dirichlet n) = V.Vector Double
   distSample _ = dirichlet
   distLogP _ counts probs = logp + logz
-   where logp = sum (V.zipWith (\a x -> log x * (a - 1)) counts probs)
-         logz = logGamma (sum counts) - sum (logGamma <$> counts)
+   where
+    logp = sum (V.zipWith (\a x -> log x * (a - 1)) counts probs)
+    logz = logGamma (sum counts) - sum (logGamma <$> counts)
 
 instance KnownNat n => Jeffreys (AsPrior (Dirichlet n)) where
   jeffreysPrior = V.replicate (fromIntegral $ natVal (Proxy :: Proxy n)) 0.5

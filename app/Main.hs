@@ -1,5 +1,5 @@
 {-# LANGUAGE TemplateHaskell, DataKinds, DeriveGeneric, TypeApplications, ScopedTypeVariables,
-             UndecidableInstances, FlexibleContexts, PartialTypeSignatures #-}
+             UndecidableInstances, FlexibleContexts, PartialTypeSignatures, StandaloneDeriving #-}
 {-# OPTIONS_GHC -Wno-partial-type-signatures #-}
 module Main where
 
@@ -7,9 +7,9 @@ import           Inference.Conjugate
 
 import           Control.Monad                  ( foldM )
 import           Data.Dynamic                   ( Dynamic
-                                                , toDyn
-                                                , fromDynamic
                                                 , Typeable
+                                                , fromDynamic
+                                                , toDyn
                                                 )
 import qualified Data.Sequence                 as S
 import qualified Data.Vector                   as V
@@ -20,12 +20,12 @@ import           System.Random.MWC.Probability
 -- | An example of a record that describes prior variables.
 -- It can be instantiated with different type constructors for 'f' (kind @* -> *@),
 -- which allows it to represent both the hyperparameters and parameters of the model.
-data ExampleParams f =
-  ExampleParams { _epP :: f Beta
-                , _epCat1 :: f (Dirichlet 3)
-                , _epCat2 :: f (Dirichlet 3)
-                }
-  deriving (Generic)
+data ExampleParams f = ExampleParams
+  { _epP    :: f Beta
+  , _epCat1 :: f (Dirichlet 3)
+  , _epCat2 :: f (Dirichlet 3)
+  }
+  deriving Generic
 
 -- We need lenses to the fields of ExampleParams, which can be generated automatically.
 makeLenses ''ExampleParams

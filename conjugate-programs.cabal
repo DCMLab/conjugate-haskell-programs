@@ -36,6 +36,7 @@ library
     , microlens
     , microlens-th
     , mtl
+    , multiset
     , mwc-probability
     , mwc-random
     , primitive
@@ -58,6 +59,7 @@ executable conjugate-programs-exe
     , microlens
     , microlens-th
     , mtl
+    , multiset
     , mwc-probability
     , mwc-random
     , primitive
@@ -81,6 +83,7 @@ test-suite conjugate-programs-test
     , microlens
     , microlens-th
     , mtl
+    , multiset
     , mwc-probability
     , mwc-random
     , primitive
