@@ -5,14 +5,19 @@ module Main where
 
 import           Inference.Conjugate
 
-import           Control.Monad                  ( foldM )
+import           Control.Monad                  ( foldM
+                                                , replicateM
+                                                )
 import           Data.Dynamic                   ( Dynamic
                                                 , Typeable
                                                 , fromDynamic
                                                 , toDyn
                                                 )
+import           Data.Foldable                  ( forM_ )
+import           Data.Maybe                     ( mapMaybe )
 import qualified Data.Sequence                 as S
 import qualified Data.Vector                   as V
+import           GHC.Float                      ( int2Double )
 import           GHC.Generics
 import           Lens.Micro.TH                  ( makeLenses )
 import           System.Random.MWC.Probability
@@ -67,8 +72,8 @@ examplePriors = ExampleParams { _epP    = HyperRep (0.5, 0.5)
 -- The likelihood can be interpreted by different interpreters 'm' for inference.
 exampleLk :: _ => RandomInterpreter m ExampleParams => m Int
 exampleLk = do
-  coin <- sampleValue Bernoulli epP
-  sampleValue (Categorical @3) $ if coin then epCat1 else epCat2
+  coin <- sampleValue "coin" Bernoulli epP
+  sampleValue "cat" (Categorical @3) $ if coin then epCat1 else epCat2
 
 -- | An example of how to work with a model.
 main :: IO ()
@@ -122,3 +127,35 @@ main = do
   case posteriorObsMb of
     Just posteriorObs -> print posteriorObs
     Nothing           -> putStrLn "failed to compute posterior"
+  -- See how much the we have learned:
+  -- Draw uniform samples as a baseline and compare them with the observations
+  -- both under the prior and under the posterior distribution.
+  let nFakes = 100
+  fakes <- replicateM nFakes $ do
+    probs <- sample (sampleProbs @ExampleParams prior) gen
+    sampleTrace probs exampleLk gen
+  -- putStrLn "random traces for comparison:"
+  -- forM_ fakes $ \(_, t) -> printTrace t exampleLk
+  let
+    Just posteriorObs = posteriorObsMb
+    fakeLogPsPrior    = mapMaybe
+      (\(_, trace) -> snd <$> evalTracePredLogP prior trace exampleLk)
+      fakes
+    fakeLogPsPosterior = mapMaybe
+      (\(_, trace) -> snd <$> evalTracePredLogP posteriorObs trace exampleLk)
+      fakes
+    obsLogPsPrior = mapMaybe
+      (\trace -> snd <$> evalTracePredLogP prior trace exampleLk)
+      tracesObs
+    obsLogPsPosterior = mapMaybe
+      (\trace -> snd <$> evalTracePredLogP posteriorObs trace exampleLk)
+      tracesObs
+  putStrLn "before learning:"
+  putStrLn $ "  mean prior logp (fakes):     " <> show
+    (sum fakeLogPsPrior / int2Double nFakes)
+  putStrLn $ "  mean prior logp (obs):       " <> show (sum obsLogPsPrior / 8)
+  putStrLn "after learning:"
+  putStrLn $ "  mean posterior logp (fakes): " <> show
+    (sum fakeLogPsPosterior / int2Double nFakes)
+  putStrLn $ "  mean posterior logp (obs):   " <> show
+    (sum obsLogPsPosterior / 8)
