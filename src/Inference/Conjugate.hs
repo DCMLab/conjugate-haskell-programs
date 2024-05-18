@@ -6,14 +6,12 @@
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE InstanceSigs #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE PartialTypeSignatures #-}
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE StandaloneKindSignatures #-}
-{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
@@ -231,20 +229,25 @@ instance (Generic (t HyperRep), GUniform (Rep (t HyperRep))) => Uniform (t :: (T
 
 class Prior a where
   sampleProbs :: (PrimMonad m) => Hyper a -> Prob m (Probs a)
+  expectedProbs :: Hyper a -> Probs a
 
 class GPrior i o where
   gsampleProbs :: forall m p. (PrimMonad m) => i p -> Prob m (o p)
+  gexpectedProbs :: i p -> o p
 
 instance GPrior V1 V1 where
   gsampleProbs = undefined -- ok
+  gexpectedProbs = undefined
 
 instance GPrior U1 U1 where
   gsampleProbs _ = pure U1
+  gexpectedProbs _ = U1
 
 -- base case: k is a conjugate distribution
 instance (Prior (AsPrior p)) => GPrior (K1 i (HyperRep p)) (K1 i (ProbsRep p)) where
   gsampleProbs (K1 (HyperRep hyper)) =
     K1 . ProbsRep <$> sampleProbs @(AsPrior p) hyper
+  gexpectedProbs (K1 (HyperRep hyper)) = K1 $ ProbsRep $ expectedProbs @(AsPrior p) hyper
 
 -- recursive case: k is another record
 instance
@@ -252,16 +255,21 @@ instance
   => GPrior (K1 i (k HyperRep)) (K1 i (k ProbsRep))
   where
   gsampleProbs (K1 hyper) = K1 <$> sampleProbs @k hyper
+  gexpectedProbs (K1 hyper) = K1 $ expectedProbs @k hyper
 
 instance (GPrior ti to) => GPrior (M1 i c ti) (M1 i' c' to) where
   gsampleProbs (M1 x) = M1 <$> gsampleProbs x
+  gexpectedProbs (M1 x) = M1 $ gexpectedProbs x
 
 instance (GPrior ia oa, GPrior ib ob) => GPrior (ia :*: ib) (oa :*: ob) where
   gsampleProbs (a :*: b) = (:*:) <$> gsampleProbs a <*> gsampleProbs b
+  gexpectedProbs (a :*: b) = gexpectedProbs a :*: gexpectedProbs b
 
 instance (GPrior ia oa, GPrior ib ob) => GPrior (ia :+: ib) (oa :+: ob) where
   gsampleProbs (L1 a) = L1 <$> gsampleProbs a
   gsampleProbs (R1 b) = R1 <$> gsampleProbs b
+  gexpectedProbs (L1 a) = L1 $ gexpectedProbs a
+  gexpectedProbs (R1 b) = R1 $ gexpectedProbs b
 
 instance
   ( Generic (a HyperRep)
@@ -271,6 +279,7 @@ instance
   => Prior (a :: (Type -> Type) -> Type)
   where
   sampleProbs hyper = GHC.Generics.to <$> gsampleProbs (from hyper)
+  expectedProbs hyper = GHC.Generics.to $ gexpectedProbs $ from hyper
 
 -----------------------
 -- likelihood monads --
@@ -678,6 +687,7 @@ instance Uniform (AsPrior Beta) where
 
 instance Prior (AsPrior Beta) where
   sampleProbs = distSample Beta
+  expectedProbs (a, b) = a / (a + b)
 
 -- Bernoulli
 -- ---------
@@ -745,6 +755,10 @@ instance (KnownNat n) => Uniform (AsPrior (Dirichlet n)) where
 
 instance Prior (AsPrior (Dirichlet n)) where
   sampleProbs = distSample Dirichlet
+  expectedProbs :: V.Vector Double -> V.Vector Double
+  expectedProbs probs = (/ norm) <$> probs
+   where
+    norm = V.sum probs
 
 -- Geometric (from 0)
 -- ------------------
