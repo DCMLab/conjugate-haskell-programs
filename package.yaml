@@ -31,6 +31,7 @@ dependencies:
 - mwc-probability
 - primitive
 - math-functions
+- aeson
 
 library:
   source-dirs: src

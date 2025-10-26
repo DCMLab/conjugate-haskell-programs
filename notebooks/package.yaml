@@ -18,6 +18,7 @@ copyright:           "Christoph Finkensiep"
 dependencies:
 - base >= 4.7 && < 5
 - matplotlib
+- text
 - bytestring
 - ihaskell
 - temporary

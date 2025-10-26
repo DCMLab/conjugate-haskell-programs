@@ -291,7 +291,7 @@ class (Monad m) => RandomInterpreter m r | m -> r where
   type SampleCtx m a :: Constraint
   sampleValue :: (Conjugate p l, SampleCtx m l) => String -> l -> Accessor r p -> m (Support l)
   sampleConst :: (Distribution d, SampleCtx m d) => String -> d -> Params d -> m (Support d)
-  permutationPlate :: (Ord a) => Int -> m a -> m [a]
+  permutationPlate :: (Ord a) => Int -> (Int -> m a) -> m [a]
 
 newtype Trace (r :: (Type -> Type) -> Type) = Trace {runTrace :: S.Seq Dynamic}
   deriving (Show)
@@ -348,7 +348,7 @@ instance (PrimMonad m) => RandomInterpreter (SampleI m r) r where
     -> Params d
     -> SampleI m r (Support d)
   sampleConst _ dist params = SampleI $ lift $ distSample dist params
-  permutationPlate = replicateM
+  permutationPlate = replicateMWithI
 
 sampleResult :: p ProbsRep -> SampleI m p a -> Gen (PrimState m) -> m a
 sampleResult probs (SampleI a) = sample (runReaderT a probs)
@@ -384,7 +384,7 @@ instance (PrimMonad m) => RandomInterpreter (TraceI m r) r where
     val <- lift $ lift $ distSample dist params
     modify $ \(Trace obs) -> Trace $ obs S.|> toDyn val
     pure val
-  permutationPlate = replicateM
+  permutationPlate = replicateMWithI
 
 sampleTrace
   :: r ProbsRep -> TraceI m r a -> Gen (PrimState m) -> m (a, Trace r)
@@ -437,7 +437,7 @@ instance RandomInterpreter (EvalTraceI r) r where
           runTraceLogP
             probs
             trace
-            (replicateM n submodel)
+            (replicateMWithI n submodel)
     let unique = MS.fromList results
         permutations =
           logFactorial n - sum (logFactorial . snd <$> MS.toOccurList unique)
@@ -498,7 +498,7 @@ instance RandomInterpreter (EvalPredTraceI r) r where
           runTracePredLogP
             probs
             trace
-            (replicateM n submodel)
+            (replicateMWithI n submodel)
     let unique = MS.fromList results
         permutations =
           logFactorial n - sum (logFactorial . snd <$> MS.toOccurList unique)
@@ -547,7 +547,7 @@ instance RandomInterpreter (UpdatePriorsI r) r where
     (val, trace') <- lift $ takeTrace trace
     put (trace', priors)
     pure val
-  permutationPlate = replicateM
+  permutationPlate = replicateMWithI
 
 getPosterior
   :: r HyperRep -> Trace r -> UpdatePriorsI r a -> Maybe (r HyperRep)
@@ -601,7 +601,7 @@ instance RandomInterpreter (ShowTraceI r) r where
     -> Params d
     -> ShowTraceI r (Support d)
   sampleConst name _ _ = showTraceItem @d name
-  permutationPlate = replicateM
+  permutationPlate = replicateMWithI
 
 showTrace :: Trace r -> ShowTraceI r a -> (Maybe a, String)
 showTrace trace (ShowTraceI model) =
@@ -657,7 +657,7 @@ instance RandomInterpreter (TraceTraceI r) r where
     -> Params d
     -> TraceTraceI r (Support d)
   sampleConst name _ _ = traceTraceItem @d name
-  permutationPlate = replicateM
+  permutationPlate = replicateMWithI
 
 traceTrace :: Trace r -> TraceTraceI r a -> a
 traceTrace trace (TraceTraceI model) = evalState model trace
@@ -866,3 +866,9 @@ instance Conjugate (Dirichlet n) (Categorical n) where
         counts
   predLogP _ counts obs =
     log (fromMaybe 0 $ counts V.!? obs) - log (V.sum counts)
+
+-- utilities and helpers
+-- =====================
+
+replicateMWithI :: (Applicative m) => Int -> (Int -> m a) -> m [a]
+replicateMWithI i f = traverse f [0 .. i]

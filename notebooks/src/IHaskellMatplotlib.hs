@@ -1,11 +1,12 @@
 module IHaskellMatplotlib where
 
-import           IHaskell.Display
-import           Graphics.Matplotlib
-import qualified Data.ByteString.Char8         as Char
-import qualified System.IO.Temp                as Sys
-import qualified System.Directory              as Sys
-import qualified Control.Exception             as E
+import qualified Control.Exception as E
+import qualified Data.ByteString.Char8 as Char
+import qualified Data.Text.IO as T
+import Graphics.Matplotlib
+import IHaskell.Display
+import qualified System.Directory as Sys
+import qualified System.IO.Temp as Sys
 
 instance IHaskellDisplay Matplotlib where
   display = displaySVG
@@ -24,9 +25,9 @@ displaySVG :: Matplotlib -> IO Display
 displaySVG p = do
   fname <- Sys.emptySystemTempFile $ basename <> "svg"
   file fname p
-  imgData <- Char.readFile fname
+  imgData <- T.readFile fname
   removeFile fname
-  return $ Display [svg $ Char.unpack imgData]
+  return $ Display [svg imgData]
 
 removeFile file = Sys.removeFile file `E.catch` handleFileError
  where
