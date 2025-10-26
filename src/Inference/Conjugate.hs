@@ -871,4 +871,4 @@ instance Conjugate (Dirichlet n) (Categorical n) where
 -- =====================
 
 replicateMWithI :: (Applicative m) => Int -> (Int -> m a) -> m [a]
-replicateMWithI i f = traverse f [0 .. i]
+replicateMWithI i f = traverse f [0 .. i - 1]
