@@ -293,7 +293,7 @@ class (Monad m) => RandomInterpreter m r | m -> r where
   sampleConst :: (Distribution d, SampleCtx m d) => String -> d -> Params d -> m (Support d)
   permutationPlate :: (Ord a) => Int -> (Int -> m a) -> m [a]
 
-newtype Trace (r :: (Type -> Type) -> Type) = Trace {runTrace :: S.Seq Dynamic}
+newtype Trace (r :: (Type -> Type) -> Type) = Trace {runTrace :: S.Seq (String, Dynamic)}
   deriving (Show)
 
 observeValue
@@ -303,7 +303,7 @@ observeValue
   -> Accessor r p
   -> Support l
   -> StateT (Trace r) m ()
-observeValue _ _ _ val = modify $ \(Trace st) -> Trace $ st S.|> toDyn val
+observeValue name _ _ val = modify $ \(Trace st) -> Trace $ st S.|> (name, toDyn val)
 
 observeConst
   :: (Distribution d, Typeable (Support d), Monad m)
@@ -312,15 +312,20 @@ observeConst
   -> Params d
   -> Support d
   -> StateT (Trace r) m ()
-observeConst _ _ _ val = modify $ \(Trace st) -> Trace $ st S.|> toDyn val
+observeConst name _ _ val = modify $ \(Trace st) -> Trace $ st S.|> (name, toDyn val)
 
-takeTrace :: (Typeable a) => Trace r -> Maybe (a, Trace r)
+takeTrace :: (Typeable a) => Trace r -> Maybe ((String, a), Trace r)
 takeTrace (Trace t) = do
-  (valDyn, rest) <- case S.viewl t of
+  ((name, valDyn), rest) <- case S.viewl t of
     S.EmptyL -> Nothing
-    valDyn S.:< rest -> Just (valDyn, rest)
+    entry S.:< rest -> Just (entry, rest)
   val <- fromDynamic valDyn
-  pure (val, Trace rest)
+  pure ((name, val), Trace rest)
+
+peekTrace :: Trace r -> Maybe String
+peekTrace (Trace t) = case S.viewl t of
+  S.EmptyL -> Nothing
+  (name, _val) S.:< _rest -> Just name
 
 -- just sample
 -- -----------
@@ -368,10 +373,10 @@ instance (PrimMonad m) => RandomInterpreter (TraceI m r) r where
     -> l
     -> Accessor r p
     -> TraceI m r (Support l)
-  sampleValue _ lk getProbs = TraceI $ do
+  sampleValue name lk getProbs = TraceI $ do
     probs <- ask
     val <- lift $ lift $ distSample lk $ runProbs $ view getProbs probs
-    modify $ \(Trace obs) -> Trace $ obs S.|> toDyn val
+    modify $ \(Trace obs) -> Trace $ obs S.|> (name, toDyn val)
     pure val
   sampleConst
     :: forall d
@@ -380,9 +385,9 @@ instance (PrimMonad m) => RandomInterpreter (TraceI m r) r where
     -> d
     -> Params d
     -> TraceI m r (Support d)
-  sampleConst _ dist params = TraceI $ do
+  sampleConst name dist params = TraceI $ do
     val <- lift $ lift $ distSample dist params
-    modify $ \(Trace obs) -> Trace $ obs S.|> toDyn val
+    modify $ \(Trace obs) -> Trace $ obs S.|> (name, toDyn val)
     pure val
   permutationPlate = replicateMWithI
 
@@ -411,7 +416,7 @@ instance RandomInterpreter (EvalTraceI r) r where
   sampleValue _ lk getProbs = EvalTraceI $ do
     probs <- ask
     (trace, totalLogP) <- get
-    (val, trace') <- lift $ lift $ takeTrace trace
+    ((_name, val), trace') <- lift $ lift $ takeTrace trace
     let logP = distLogP lk (runProbs $ view getProbs probs) val
     put (trace', totalLogP + logP)
     pure val
@@ -424,7 +429,7 @@ instance RandomInterpreter (EvalTraceI r) r where
     -> EvalTraceI r (Support d)
   sampleConst _ dist params = EvalTraceI $ do
     (trace, totalLogP) <- get
-    (val, trace') <- lift $ lift $ takeTrace trace
+    ((_name, val), trace') <- lift $ lift $ takeTrace trace
     let logP = distLogP dist params val
     put (trace', totalLogP + logP)
     pure val
@@ -472,7 +477,7 @@ instance RandomInterpreter (EvalPredTraceI r) r where
   sampleValue _ lk getHyper = EvalPredTraceI $ do
     hyper <- ask
     (trace, totalLogP) <- get
-    (val, trace') <- lift $ lift $ takeTrace trace
+    ((_name, val), trace') <- lift $ lift $ takeTrace trace
     let logP = predLogP @p lk (runHyper $ view getHyper hyper) val
     put (trace', totalLogP + logP)
     pure val
@@ -485,7 +490,7 @@ instance RandomInterpreter (EvalPredTraceI r) r where
     -> EvalPredTraceI r (Support d)
   sampleConst _ dist params = EvalPredTraceI $ do
     (trace, totalLogP) <- get
-    (val, trace') <- lift $ lift $ takeTrace trace
+    ((_name, val), trace') <- lift $ lift $ takeTrace trace
     let logP = distLogP dist params val
     put (trace', totalLogP + logP)
     pure val
@@ -533,7 +538,7 @@ instance RandomInterpreter (UpdatePriorsI r) r where
     -> UpdatePriorsI r (Support l)
   sampleValue _ lk accessor = UpdatePriorsI $ do
     (trace, priors) <- get
-    (val, trace') <- lift $ takeTrace trace
+    ((_name, val), trace') <- lift $ takeTrace trace
     let priors' :: r HyperRep
         priors' =
           over
@@ -544,7 +549,7 @@ instance RandomInterpreter (UpdatePriorsI r) r where
     pure val
   sampleConst _ _ _ = UpdatePriorsI $ do
     (trace, priors) <- get
-    (val, trace') <- lift $ takeTrace trace
+    ((_name, val), trace') <- lift $ takeTrace trace
     put (trace', priors)
     pure val
   permutationPlate = replicateMWithI
@@ -568,7 +573,7 @@ showTraceItem
   -> ShowTraceI r (Support l)
 showTraceItem name = ShowTraceI $ do
   trace <- get
-  (val, trace') <- MaybeT $ pure $ takeTrace trace
+  ((_name, val), trace') <- MaybeT $ pure $ takeTrace trace
   put trace'
   let distName = show (typeRep (Proxy :: Proxy l))
   tell $
@@ -630,12 +635,18 @@ traceTraceItem
 traceTraceItem name = TraceTraceI $ do
   trace <- get
   let loc = show (typeRep (Proxy :: Proxy l)) <> " at " <> name
-  case takeTrace trace of
-    Just (val, trace') -> do
-      put trace'
-      DT.traceM $ "Sampled value " <> show val <> " from a " <> loc <> "."
-      pure val
-    Nothing -> error $ "Incompatible trace at " <> loc <> "."
+  let tnameMaybe = peekTrace trace
+  case tnameMaybe of
+    Nothing -> error $ "Expected " <> name <> " but trace is empty."
+    Just tname ->
+      if name == tname
+        then case takeTrace trace of
+          Just ((tname, val), trace') -> do
+            put trace'
+            DT.traceM $ "Sampled value " <> show val <> " from a " <> loc <> "."
+            pure val
+          Nothing -> error $ "Incompatible trace at " <> loc <> "."
+        else error $ "RV names don't match. expected: " <> name <> ". actual: " <> tname <> "."
 
 instance RandomInterpreter (TraceTraceI r) r where
   type
