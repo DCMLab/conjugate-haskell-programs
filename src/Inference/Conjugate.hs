@@ -322,10 +322,10 @@ takeTrace (Trace t) = do
   val <- fromDynamic valDyn
   pure ((name, val), Trace rest)
 
-peekTrace :: Trace r -> Maybe String
+peekTrace :: Trace r -> Maybe (String, Dynamic)
 peekTrace (Trace t) = case S.viewl t of
   S.EmptyL -> Nothing
-  (name, _val) S.:< _rest -> Just name
+  item S.:< _rest -> Just item
 
 -- just sample
 -- -----------
@@ -635,17 +635,17 @@ traceTraceItem
 traceTraceItem name = TraceTraceI $ do
   trace <- get
   let loc = show (typeRep (Proxy :: Proxy l)) <> " at " <> name
-  let tnameMaybe = peekTrace trace
-  case tnameMaybe of
+  let itemMaybe = peekTrace trace
+  case itemMaybe of
     Nothing -> error $ "Expected " <> name <> " but trace is empty."
-    Just tname ->
+    Just (tname, tval) ->
       if name == tname
         then case takeTrace trace of
-          Just ((tname, val), trace') -> do
+          Just ((_tname, val), trace') -> do
             put trace'
             DT.traceM $ "Sampled value " <> show val <> " from a " <> loc <> "."
             pure val
-          Nothing -> error $ "Incompatible trace at " <> loc <> "."
+          Nothing -> error $ "Incompatible trace at " <> loc <> ". Got " <> show (tname, tval)
         else error $ "RV names don't match. expected: " <> name <> ". actual: " <> tname <> "."
 
 instance RandomInterpreter (TraceTraceI r) r where
